@@ -6,7 +6,7 @@
 
 ## 在线查看
 
-GitHub Pages 地址：`https://<你的用户名>.github.io/<仓库名>/`
+GitHub Pages 地址：**https://corrinsh.github.io/lottery-2026/**
 
 进入后先选择「大乐透」或「双色球」，两者数据完全独立。
 
