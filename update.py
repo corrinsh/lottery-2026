@@ -155,7 +155,16 @@ def main():
         if ok2:
             print(f"  看板文件 {round(len(page) / 1024, 1)} KB，更新时间 {datetime.now():%Y-%m-%d %H:%M}")
 
-    print("== 完成 ==" if (ok1 and ok2) else "== 重建有异常，请查看上方日志 ==")
+    if ok1 and ok2:
+        print("== 同步到 GitHub ==")
+        rr = subprocess.run([PY, os.path.join(BASE, "sync_github.py")], cwd=BASE,
+                            capture_output=True, text=True, encoding="utf-8", errors="replace")
+        out = (rr.stdout or "").strip() or (rr.stderr or "").strip()[-500:]
+        print(out)
+        if rr.returncode != 0:
+            ok2 = False
+
+    print("== 完成 ==" if (ok1 and ok2) else "== 重建或同步有异常，请查看上方日志 ==")
     return 0 if (ok1 and ok2) else 1
 
 
