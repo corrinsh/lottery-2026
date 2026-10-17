@@ -1,0 +1,11 @@
+# 测试截图（验收证据，不入库）
+测试/shots/
+
+# Python
+__pycache__/
+*.pyc
+
+# 系统文件
+Thumbs.db
+desktop.ini
+.DS_Store
