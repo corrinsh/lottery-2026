@@ -58,7 +58,11 @@ def local_files():
 
 
 def blob_sha(path):
-    return subprocess.check_output(["git", "hash-object", path], cwd=BASE).decode().strip()
+    # 必须按原始字节算：git hash-object 会按 .gitattributes 做 eol 转换，与远端存的字节不一致
+    import hashlib
+    data = open(os.path.join(BASE, path), "rb").read()
+    header = ("blob %d" % len(data)).encode() + bytes([0])
+    return hashlib.sha1(header + data).hexdigest()
 
 
 def main():
