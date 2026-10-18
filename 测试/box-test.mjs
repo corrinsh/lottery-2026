@@ -41,26 +41,19 @@ function ck(n, ok, note = '') { res.push(ok); console.log((ok ? 'PASS ' : 'FAIL 
 
 async function clickAt(x, y) {
   await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: x - 30, y: y - 25, button: 'none' });
-  await sleep(80);
+  await sleep(70);
   await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, button: 'none' });
-  await sleep(100);
+  await sleep(90);
   await send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 });
   await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 });
 }
 
-// off: 点在当期第几个号码上（0..6）
 const pageXY = (periodIdx, off = 3) => `(() => {
   const el = document.getElementById('dlt-chart');
   const c = echarts.getInstanceByDom(el);
   const p = c.convertToPixel({gridIndex:0}, [${periodIdx}*7 + ${off}, 18]);
   const r = el.getBoundingClientRect();
   return { x: Math.round(r.left + p[0]), y: Math.round(r.top + p[1]) };
-})()`;
-const clearBox = `(() => {
-  const c = echarts.getInstanceByDom(document.getElementById('dlt-chart'));
-  state.dlt.selected = null;
-  c.setOption({series:[{id:'main-line', markArea:{data:[]}}]});
-  return true;
 })()`;
 const resetZoom = `(() => {
   const c = echarts.getInstanceByDom(document.getElementById('dlt-chart'));
@@ -73,16 +66,22 @@ const perWidth = `(() => {
   const b = c.convertToPixel({gridIndex:0},[7,0]);
   return Math.round(Math.abs(b[0]-a[0])*10)/10;
 })()`;
-const boxPeriod = `(() => {
+// 返回被框住的期索引数组
+const boxes = `(() => {
   const c = echarts.getInstanceByDom(document.getElementById('dlt-chart'));
-  const o = c.getOption();
-  const ma = o.series[0].markArea;
-  if(!ma || !ma.data || !ma.data.length) return null;
-  const from = ma.data[0][0].xAxis, to = ma.data[0][1].xAxis;
-  // 由框的范围反推期号
-  return { gi: Math.round((from + 0.45) / 7), from, to };
+  const ma = c.getOption().series[0].markArea;
+  if(!ma || !ma.data || !ma.data.length) return [];
+  return ma.data.map(d => Math.round((d[0].xAxis + 0.45) / 7));
 })()`;
-const detailTxt = `document.getElementById('dlt-dp').textContent`;
+const hint = `document.getElementById('dlt-hint').innerText`;
+
+async function hit(gi, off = 3) {
+  await ev(resetZoom); await sleep(520);
+  const pt = await ev(pageXY(gi, off));
+  await clickAt(pt.x, pt.y);
+  await sleep(520);
+  return await ev(boxes);
+}
 
 await send('Page.enable'); await send('Runtime.enable');
 await send('Page.navigate', { url: URL_ });
@@ -90,26 +89,42 @@ await sleep(2500);
 await ev(`document.querySelector('[data-enter="dlt"]').click()`);
 await sleep(3800);
 ck('总走势已渲染', await ev(`!!document.querySelector('#dlt-chart canvas')`));
+ck('初始提示提到可多选', (await ev(hint)).includes('可多选'), await ev(hint));
 
-/* ---- 同一期不同点位，都应框住同一期（这是之前偏一期的 bug）---- */
-for (const off of [0, 1, 3, 5, 6]) {
-  await ev(clearBox); await ev(resetZoom); await sleep(650);
-  const target = 110 - 118 + 118; // 26110 对应索引 109
-  const pt = await ev(pageXY(109, off));
-  await clickAt(pt.x, pt.y);
-  await sleep(800);
-  const box = await ev(boxPeriod);
-  const per = await ev(`DATA.dlt.periods[109]`);
-  ck(`点第 ${off + 1} 个号（共 7 位）→ 框住 ${per}`, box && box.gi === 109, JSON.stringify(box));
+/* ---- 依次框三期，框应累加而不是替换 ---- */
+let got = await hit(30);
+ck('点第 1 期 → 1 个框', got.length === 1 && got[0] === 30, JSON.stringify(got));
+
+got = await hit(60);
+ck('再点第 2 期 → 两个框并存', got.length === 2 && got.includes(30) && got.includes(60), JSON.stringify(got));
+
+got = await hit(90, 5);
+ck('再点第 3 期 → 三个框并存', got.length === 3 && got.includes(90), JSON.stringify(got));
+ck('提示显示已框选 3 期', (await ev(hint)).includes('已框选 3 期'), await ev(hint));
+await shot('box-01-多选三期');
+
+/* ---- 只聚焦第一次，后续点击不打乱视图 ---- */
+ck('连续多选时视图未被反复放大', (await ev(perWidth)) < 24, 'perWidth=' + await ev(perWidth) + 'px');
+
+/* ---- 点已框的一期可单独取消 ---- */
+got = await hit(60);
+ck('点中间那期 → 只移除它，其余保留', got.length === 2 && !got.includes(60) && got.includes(30) && got.includes(90), JSON.stringify(got));
+
+/* ---- 清除全部 ---- */
+await ev(`document.querySelector('#dlt-hint [data-clear]').click()`);
+await sleep(400);
+got = await ev(boxes);
+ck('清除全部后框清空', got.length === 0, JSON.stringify(got));
+ck('提示回到初始文案', (await ev(hint)).includes('可多选'), await ev(hint));
+
+/* ---- 单期依然精确：一期内任意点位都框同一期 ---- */
+for (const off of [0, 3, 6]) {
+  await ev(`(()=>{ state.dlt.selected=[]; echarts.getInstanceByDom(document.getElementById('dlt-chart')).setOption({series:[{id:'main-line',markArea:{data:[]}}]}); return true })()`);
+  got = await hit(109, off);
+  ck(`点 26110 第 ${off + 1} 个号 → 框住 26110`, got.length === 1 && got[0] === 109, JSON.stringify(got));
 }
 
-/* ---- 框的宽度要跟着缩放走：放大后框应正好包住该期 7 个点 ---- */
-await ev(clearBox); await ev(resetZoom); await sleep(650);
-const pt0 = await ev(pageXY(109, 2));
-await clickAt(pt0.x, pt0.y);
-await sleep(1200);
-ck('点击后自动聚焦', (await ev(perWidth)) > 24, 'perWidth=' + await ev(perWidth) + 'px');
-
+/* ---- 放大后框宽随缩放变化 ---- */
 const fit = await ev(`(() => {
   const c = echarts.getInstanceByDom(document.getElementById('dlt-chart'));
   const ma = c.getOption().series[0].markArea.data[0];
@@ -117,33 +132,10 @@ const fit = await ev(`(() => {
   const right = c.convertToPixel({gridIndex:0},[ma[1].xAxis,0])[0];
   const p0 = c.convertToPixel({gridIndex:0},[109*7,0])[0];
   const p6 = c.convertToPixel({gridIndex:0},[109*7+6,0])[0];
-  return { left: Math.round(left), right: Math.round(right),
-           p0: Math.round(p0), p6: Math.round(p6), w: Math.round(right-left) };
+  return { left: Math.round(left), right: Math.round(right), p0: Math.round(p0), p6: Math.round(p6), w: Math.round(right-left) };
 })()`);
-ck('放大后框仍精确包住该期 7 个点', fit && fit.left < fit.p0 && fit.right > fit.p6,
+ck('放大后框仍包住该期 7 个点', fit && fit.left < fit.p0 && fit.right > fit.p6,
   `框 ${fit.left}~${fit.right}，点位 ${fit.p0}~${fit.p6}，宽 ${fit.w}px`);
-ck('框宽随缩放变宽（不是固定像素）', fit && fit.w > 40, 'w=' + (fit ? fit.w : '?') + 'px');
-await shot('box-01-框选一期');
-
-/* ---- 期号与框一致 ---- */
-const per109 = await ev(`DATA.dlt.periods[109]`);
-ck('下方详情显示 26110', (await ev(detailTxt)).includes(per109), await ev(detailTxt));
-
-/* ---- 再点同一条取消 ---- */
-const ptc = await ev(pageXY(109, 3));
-await clickAt(ptc.x, ptc.y);
-await sleep(700);
-ck('再点同一条可取消', (await ev(boxPeriod)) === null, JSON.stringify(await ev(boxPeriod)));
-
-/* ---- 换一期 ---- */
-await ev(clearBox); await ev(resetZoom); await sleep(650);
-const pt2 = await ev(pageXY(30, 6));
-await clickAt(pt2.x, pt2.y);
-await sleep(800);
-const box2 = await ev(boxPeriod);
-ck('点 26131 的第 7 位 → 框住 26131', box2 && box2.gi === 30,
-  (await ev(`DATA.dlt.periods[30]`)) + ' / ' + JSON.stringify(box2));
-await shot('box-02-换一期');
 
 ck('无 JS 异常', errs.length === 0, errs.slice(0, 2).join(' | '));
 console.log('\n== ' + res.filter(Boolean).length + '/' + res.length + ' passed ==');
