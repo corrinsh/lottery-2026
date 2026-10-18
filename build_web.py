@@ -857,7 +857,13 @@ function clearBoxes(zone){
 function updateBoxHint(zone){
   const el = document.getElementById(zone + '-hint');
   if(!el) return;
-  const n = state[zone].selected.length;
+  const st = state[zone];
+  if(st.view !== 'total'){
+    // 单点视图没有框选功能，别写"可多选"误导人
+    el.innerHTML = '悬停查看数值 · 点击任意位置查看该期开奖号码 · 滚轮缩放';
+    return;
+  }
+  const n = st.selected.length;
   if(!n){
     el.innerHTML = '悬停看数值 · 点击任意位置框出该期，可多选 · 滚轮缩放';
   }else{
