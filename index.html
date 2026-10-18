@@ -354,7 +354,7 @@ footer .rule{height:1px;background:rgba(245,239,227,.14);margin:22px 0}
         <div class="chart" id="dlt-chart" role="img" aria-label="大乐透号码走势折线图"></div>
         <div class="card-foot">
           <div class="legend" id="dlt-legend"></div>
-          <div id="dlt-hint">悬停任意数据点查看数值 · 滚轮缩放 · 拖动下方滑块平移</div>
+          <div id="dlt-hint">悬停看数值 · 点击任意位置框出该期 · 再点同一条取消 · 滚轮缩放</div>
         </div>
       </div>
 
@@ -400,7 +400,7 @@ footer .rule{height:1px;background:rgba(245,239,227,.14);margin:22px 0}
         <div class="chart" id="ssq-chart" role="img" aria-label="双色球号码走势折线图"></div>
         <div class="card-foot">
           <div class="legend" id="ssq-legend"></div>
-          <div id="ssq-hint">悬停任意数据点查看数值 · 滚轮缩放 · 拖动下方滑块平移</div>
+          <div id="ssq-hint">悬停看数值 · 点击任意位置框出该期 · 再点同一条取消 · 滚轮缩放</div>
         </div>
       </div>
 
@@ -509,6 +509,7 @@ function totalOption(zone){
     tooltip:{
       trigger:'item', confine:true, backgroundColor:'#14100C', borderWidth:0,
       padding:0, extraCssText:'box-shadow:0 18px 44px rgba(20,16,12,.28);border-radius:0;',
+      transitionDuration:0,
       formatter:(p)=> totalTip(zone, p)
     },
     xAxis:Object.assign({}, baseAxisStyle(), {
@@ -537,9 +538,10 @@ function totalOption(zone){
        labelFormatter:(v)=>{ const gi=Math.round(v/7); return (gi>=0&&gi<N)? d.periods[gi] : ''; }}
     ],
     series:[
-      { name:'连续折线', type:'line', data:lineData, showSymbol:false, smooth:false,
+      { id:'main-line', name:'连续折线', type:'line', data:lineData, showSymbol:false, smooth:false,
         lineStyle:{width:0.9, color:'rgba(20,16,12,.30)'}, z:2, silent:true,
-        animationDuration:2600, animationEasing:'cubicInOut', sampling:'none' },
+        animationDuration:2600, animationEasing:'cubicInOut', sampling:'none',
+        markArea: (state[zone].selected == null) ? undefined : markAreaOf(zone, state[zone].selected) },
       ...scatters
     ]
   };
@@ -556,6 +558,7 @@ function singleOption(zone, posIdx){
     tooltip:{
       trigger:'axis', confine:true, backgroundColor:'#14100C', borderWidth:0, padding:0,
       extraCssText:'box-shadow:0 18px 44px rgba(20,16,12,.28);border-radius:0;',
+      transitionDuration:0,
       axisPointer:{type:'line', lineStyle:{color:'rgba(204,136,0,.5)', width:1, type:'dashed'}},
       formatter:(ps)=> singleTip(zone, ps[0])
     },
@@ -606,8 +609,8 @@ function render(zone, animate){
   if(!chart) return;
   const opt = st.view === 'total' ? totalOption(zone) : singleOption(zone, parseInt(st.view.slice(1),10)-1);
   if(!animate){ opt.animation = false; opt.animationDurationUpdate = 0; }
-  chart.clear();
-  chart.setOption(opt, true);
+  chart.dispatchAction({type:'hideTip'});
+  chart.setOption(opt, true);   // 用 notMerge 整体替换，不要先 clear()：clear 会把 tooltip 内容销毁但组件仍在监听鼠标
   if(st.zoom){ applyZoom(zone, st.zoom, false); }
 }
 
@@ -619,6 +622,7 @@ function setView(zone, view){
   const d = DATA[zone];
   state[zone].view = view;
   state[zone].zoom = null;
+  state[zone].selected = null;   // 换视图时清掉框选
   const defs = tabDefs(d);
   const cur = defs.find(t=>t.id===view);
   document.querySelectorAll('#'+zone+' .tab').forEach(b=>{
@@ -722,28 +726,67 @@ function mountChart(zone, animate){
   const el = document.getElementById(zone + '-chart');
   if(charts[zone]){ charts[zone].dispose(); charts[zone] = null; }
   charts[zone] = echarts.init(el, null, {renderer:'canvas'});
-  charts[zone].on('click', (p)=> onChartClick(zone, p));
+  charts[zone].getZr().on('click', (e)=> onCanvasClick(zone, e.offsetX, e.offsetY));
   render(zone, animate !== false);
 }
 
 /* ---------- 图表点击 → 下方详情联动 ---------- */
-function onChartClick(zone, p){
-  const d = DATA[zone], st = state[zone];
-  let gi = -1;
+function onCanvasClick(zone, x, y){
+  const chart = charts[zone], d = DATA[zone], st = state[zone];
+  if(!chart) return;
+  let pt = null;
+  try { pt = chart.convertFromPixel({gridIndex:0}, [x, y]); } catch(e){ return; }
+  if(!pt) return;
+  // 总走势：x 是全局点位序号（每期 7 个点）；单点视图：x 就是期索引
+  const gi = (st.view === 'total') ? Math.round(pt[0] / 7) : Math.round(pt[0]);
+  if(!(gi >= 0 && gi < d.count)) return;
+
   if(st.view === 'total'){
-    const v = p.value;
-    if(Array.isArray(v)) gi = d.periods.indexOf(v[2]);
-    if(gi < 0 && typeof v === 'number') gi = Math.round(v / 7);
-  }else{
-    gi = p.dataIndex;
+    const wasSelected = st.selected === gi;
+    highlightPeriod(zone, gi);
+    if(!wasSelected) focusPeriod(zone, gi);
   }
-  if(gi >= 0 && gi < d.count){
-    if(charts[zone]) charts[zone].dispatchAction({type:'hideTip'});
-    showDetail(zone, gi);
-    setTimeout(()=>{
-      document.getElementById(zone+'-detail').scrollIntoView({behavior:'smooth', block:'nearest'});
-    }, 160);
-  }
+  showDetail(zone, gi);
+}
+
+/* 期框配置：把某一期的 7 个点在图上整段框住，并标出期号 */
+function markAreaOf(zone, gi){
+  const d = DATA[zone];
+  if(gi == null) return { data: [] };
+  return {
+    silent:true, z:1,
+    itemStyle:{ color:'rgba(204,136,0,.22)',
+                borderColor:'rgba(150,92,0,.95)', borderWidth:1.5 },
+    label:{ show:true, position:'insideTop', formatter:d.periods[gi],
+            color:'#7A3208', fontSize:9, fontFamily:'Consolas',
+            backgroundColor:'rgba(252,247,237,.94)', padding:[2,3], borderRadius:2 },
+    emphasis:{ disabled:true },
+    data:[[ { xAxis: gi*7 - 0.45, yAxis: 0 },
+            { xAxis: gi*7 + 6.45, yAxis: Math.max.apply(null,d.limits) + 1 } ]]
+  };
+}
+
+/* 全景下一期只有几个像素宽，点了也看不清形状；过窄时自动聚焦到该期附近 */
+function focusPeriod(zone, gi){
+  const chart = charts[zone], d = DATA[zone];
+  if(!chart) return;
+  const a = chart.convertToPixel({gridIndex:0}, [0, 0]);
+  const b = chart.convertToPixel({gridIndex:0}, [7, 0]);
+  if(!a || !b) return;
+  const perWidth = Math.abs(b[0] - a[0]);
+  if(perWidth >= 24) return;                 // 已经够宽，不打断用户当前的缩放
+  const lo = Math.max(0, (gi - 9) * 7);
+  const hi = Math.min(d.count * 7 - 1, (gi + 9) * 7);
+  chart.dispatchAction({type:'dataZoom', startValue: lo, endValue: hi});
+}
+
+/* 总走势：把某一期的 7 个点整段框出来，再点同一条取消 */
+function highlightPeriod(zone, gi){
+  const st = state[zone], chart = charts[zone], d = DATA[zone];
+  if(!chart) return;
+  st.selected = (st.selected === gi) ? null : gi;
+  const s = st.selected;
+  chart.setOption({ series:[{ id:'main-line', markArea: markAreaOf(zone, s) }]});
 }
 
 /* ---------- 进门 / 返回 ---------- */
