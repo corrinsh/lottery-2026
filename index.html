@@ -216,6 +216,14 @@ h1 em{font-style:normal;color:var(--amber)}
 .card-foot .legend{display:flex;gap:16px;flex-wrap:wrap}
 .card-foot .legend span{display:flex;align-items:center;gap:6px;font-family:var(--mono);font-size:10.5px}
 .card-foot .legend i{width:10px;height:10px;display:block;flex:none}
+.clr{
+  appearance:none;border:1px solid rgba(20,16,12,.22);background:transparent;
+  font-family:var(--sans);font-size:11px;letter-spacing:.04em;color:var(--ink-soft);
+  padding:2px 9px;margin-left:8px;cursor:pointer;vertical-align:1px;
+  transition:border-color .22s var(--ease),color .22s var(--ease),background .22s var(--ease);
+}
+.clr:hover{border-color:var(--burnt);color:var(--burnt);background:rgba(197,82,33,.06)}
+.clr:focus-visible{outline:2px solid var(--amber);outline-offset:2px}
 
 /* ---------- detail ---------- */
 .detail{
@@ -438,7 +446,7 @@ const POS = [
   {c:'#2E2415', s:'arrow'}
 ];
 const INK='#14100C', MUTED='#6B6257', LINE='rgba(20,16,12,.10)';
-const state = {dlt:{view:'total', zoom:null}, ssq:{view:'total', zoom:null}};
+const state = {dlt:{view:'total', zoom:null, selected:[]}, ssq:{view:'total', zoom:null, selected:[]}};
 const charts = {};
 
 function fmtNum(n){ return n<10 ? '0'+n : ''+n; }
@@ -541,7 +549,7 @@ function totalOption(zone){
       { id:'main-line', name:'连续折线', type:'line', data:lineData, showSymbol:false, smooth:false,
         lineStyle:{width:0.9, color:'rgba(20,16,12,.30)'}, z:2, silent:true,
         animationDuration:2600, animationEasing:'cubicInOut', sampling:'none',
-        markArea: (state[zone].selected == null) ? undefined : markAreaOf(zone, state[zone].selected) },
+        markArea: markAreaOf(zone, state[zone].selected) },
       ...scatters
     ]
   };
@@ -622,7 +630,8 @@ function setView(zone, view){
   const d = DATA[zone];
   state[zone].view = view;
   state[zone].zoom = null;
-  state[zone].selected = null;   // 换视图时清掉框选
+  state[zone].selected = [];   // 换视图时清掉框选
+  updateBoxHint(zone);
   const defs = tabDefs(d);
   const cur = defs.find(t=>t.id===view);
   document.querySelectorAll('#'+zone+' .tab').forEach(b=>{
@@ -743,27 +752,30 @@ function onCanvasClick(zone, x, y){
   if(!(gi >= 0 && gi < d.count)) return;
 
   if(st.view === 'total'){
-    const wasSelected = st.selected === gi;
-    highlightPeriod(zone, gi);
-    if(!wasSelected) focusPeriod(zone, gi);
+    const wasEmpty = st.selected.length === 0;
+    const added = togglePeriod(zone, gi);
+    if(added && wasEmpty) focusPeriod(zone, gi);   // 只在第一次框选时聚焦，避免连续多选时视图乱跳
   }
   showDetail(zone, gi);
 }
 
 /* 期框配置：把某一期的 7 个点在图上整段框住，并标出期号 */
-function markAreaOf(zone, gi){
-  const d = DATA[zone];
-  if(gi == null) return { data: [] };
+function markAreaOf(zone, list){
+  const d = DATA[zone], yTop = Math.max.apply(null,d.limits) + 1;
+  const arr = (list || []).filter(g => g != null);
+  if(!arr.length) return { data: [] };
   return {
     silent:true, z:1,
     itemStyle:{ color:'rgba(204,136,0,.22)',
                 borderColor:'rgba(150,92,0,.95)', borderWidth:1.5 },
-    label:{ show:true, position:'insideTop', formatter:d.periods[gi],
+    label:{ show:true, position:'insideTop',
             color:'#7A3208', fontSize:9, fontFamily:'Consolas',
             backgroundColor:'rgba(252,247,237,.94)', padding:[2,3], borderRadius:2 },
     emphasis:{ disabled:true },
-    data:[[ { xAxis: gi*7 - 0.45, yAxis: 0 },
-            { xAxis: gi*7 + 6.45, yAxis: Math.max.apply(null,d.limits) + 1 } ]]
+    data: arr.map(gi => ([
+      { xAxis: gi*7 - 0.45, yAxis: 0, name: d.periods[gi] },
+      { xAxis: gi*7 + 6.45, yAxis: yTop }
+    ]))
   };
 }
 
@@ -781,13 +793,37 @@ function focusPeriod(zone, gi){
   chart.dispatchAction({type:'dataZoom', startValue: lo, endValue: hi});
 }
 
-/* 总走势：把某一期的 7 个点整段框出来，再点同一条取消 */
-function highlightPeriod(zone, gi){
-  const st = state[zone], chart = charts[zone], d = DATA[zone];
-  if(!chart) return;
-  st.selected = (st.selected === gi) ? null : gi;
-  const s = st.selected;
-  chart.setOption({ series:[{ id:'main-line', markArea: markAreaOf(zone, s) }]});
+/* 总走势：可同时框选多期；点新的一期追加，点已框的取消 */
+function togglePeriod(zone, gi){
+  const st = state[zone], chart = charts[zone];
+  if(!chart) return false;
+  const i = st.selected.indexOf(gi);
+  if(i >= 0) st.selected.splice(i, 1);
+  else st.selected.push(gi);
+  st.selected.sort((a, b) => a - b);
+  chart.setOption({ series:[{ id:'main-line', markArea: markAreaOf(zone, st.selected) }]});
+  updateBoxHint(zone);
+  return i < 0;                 // true 表示这次是新增
+}
+
+function clearBoxes(zone){
+  state[zone].selected = [];
+  if(charts[zone]) charts[zone].setOption({ series:[{ id:'main-line', markArea:{ data: [] } }]});
+  updateBoxHint(zone);
+}
+
+function updateBoxHint(zone){
+  const el = document.getElementById(zone + '-hint');
+  if(!el) return;
+  const n = state[zone].selected.length;
+  if(!n){
+    el.innerHTML = '悬停看数值 · 点击任意位置框出该期，可多选 · 滚轮缩放';
+  }else{
+    el.innerHTML = '<b style="color:#8F3A17">已框选 ' + n + ' 期</b> · 再点同一条取消'
+      + '<button type="button" class="clr" data-clear="' + zone + '">清除全部</button>';
+    const btn = el.querySelector('[data-clear]');
+    if(btn) btn.addEventListener('click', () => clearBoxes(zone));
+  }
 }
 
 /* ---------- 进门 / 返回 ---------- */
@@ -847,6 +883,7 @@ function boot(){
       if(e.key==='Enter'){ e.preventDefault(); locate(zone); }
     });
     mountChart(zone, false);
+    updateBoxHint(zone);
   });
 
   /* 进门选择层 */
