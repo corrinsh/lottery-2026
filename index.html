@@ -737,8 +737,9 @@ function onCanvasClick(zone, x, y){
   let pt = null;
   try { pt = chart.convertFromPixel({gridIndex:0}, [x, y]); } catch(e){ return; }
   if(!pt) return;
-  // 总走势：x 是全局点位序号（每期 7 个点）；单点视图：x 就是期索引
-  const gi = (st.view === 'total') ? Math.round(pt[0] / 7) : Math.round(pt[0]);
+  // 总走势：x 是全局点位序号，一期占 x ∈ [gi*7-0.45, gi*7+6.45]，中心是 gi*7+3
+  // 所以必须减 3 再除 7 才算得准；直接 x/7 会让每期后半段被判成下一期
+  const gi = (st.view === 'total') ? Math.round((pt[0] - 3) / 7) : Math.round(pt[0]);
   if(!(gi >= 0 && gi < d.count)) return;
 
   if(st.view === 'total'){
